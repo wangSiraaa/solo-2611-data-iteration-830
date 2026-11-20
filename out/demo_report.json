@@ -71,5 +71,12 @@
   "ledger_steps": 4,
   "containers": 3,
   "measurements": 2,
-  "analyses": 2
+  "analyses": 2,
+  "units_checks": [
+    "portion joint (0,2)=1/6,(1,1)=2/3,(2,0)=1/6; inspection renormalises to 4/5,1/5",
+    "statement contract 5/6 & draws 3/2; b=0 -> 1/2; one-colored -> 1 & 5/4",
+    "re-merge keeps joint anti-correlation with remainder",
+    "same-box continuation uses the remainder (5/6, not 2/3) and refuses over-draw",
+    "impossible inspection refused explicitly"
+  ]
 }

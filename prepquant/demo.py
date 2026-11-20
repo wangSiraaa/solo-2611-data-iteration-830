@@ -10,7 +10,9 @@ Runs on a fresh pair of SQLite files under ``out/``:
    consumes the new product version, while an older analysis is kept verbatim;
 4. a correction on a *consumed* branch is refused;
 5. the databases are closed and reopened to prove persistence;
-6. the recovered endpoints are compared with the generator's ground truth.
+6. the recovered endpoints are compared with the generator's ground truth;
+7. the whole-unit bead archive demo runs (portioning, inspection, merge, and the
+   two-stage sampling contract), writing ``out/units_demo_report.json``.
 
 The script exits non-zero if any check fails.
 """
@@ -252,6 +254,11 @@ def demo() -> dict:
     report["measurements"] = len(V2.list_measurements())
     report["analyses"] = len(V2.list_analyses())
     L2.close(); V2.close()
+
+    # ------------------------------------------ whole-unit portioning & contracts
+    from .units_demo import units_demo
+    units_report = units_demo(OUT)
+    report["units_checks"] = units_report["checks"]
     return report
 
 

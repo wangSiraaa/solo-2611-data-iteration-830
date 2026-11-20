@@ -16,6 +16,17 @@ from .expr import LinExpr
 from .ledger import Ledger, LedgerError, Product, product_from_payload
 from .lp import Infeasible, Unbounded, SolverError
 from .vault import Vault, VaultError
+from .units import (
+    MAX_BEADS,
+    MAX_BOXES,
+    UnitArchive,
+    UnitContradiction,
+    UnitError,
+    beads_from_ledger,
+    hypergeom_cdf,
+    hypergeom_pmf,
+)
+from .contracts import ContractError, evaluate_contract, parse_contract
 
 __all__ = [
     "q",
@@ -31,4 +42,15 @@ __all__ = [
     "Infeasible",
     "Unbounded",
     "SolverError",
+    "MAX_BEADS",
+    "MAX_BOXES",
+    "UnitArchive",
+    "UnitContradiction",
+    "UnitError",
+    "beads_from_ledger",
+    "hypergeom_cdf",
+    "hypergeom_pmf",
+    "ContractError",
+    "evaluate_contract",
+    "parse_contract",
 ]

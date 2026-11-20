@@ -11,16 +11,20 @@ prepquant/
   lp.py         # 精确两阶段单纯形（Bland 规则）
   ledger.py     # 配液账：有序原子批、来源账本、产品版本、更正重放
   vault.py      # 定量仓：测量导入、联合线性区间约束、精确端点
+  units.py      # 整单位（着色/无色标粒）分装档案：精确联合分布、盘查条件
+  contracts.py  # 两阶段抽检合同：精确放行概率与预期抽数
   scenarios.py  # 合成场景生成器（含手算真值）
   demo.py       # 端到端演示脚本（写 out/）
+  units_demo.py # 分装/回并/盘查/抽检的可复跑演示（写 out/）
   cli.py        # 命令行
-tests/          # pytest（30 项）
+tests/          # pytest（70 项）
 ```
 
 ## 运行
 
 ```bash
 python3 -m prepquant.demo          # 全流程演示 + 手算核对，写 out/demo_report.json
+python3 -m prepquant.units_demo    # 分装/回并/盘查/抽检演示，写 out/units_demo_report.json
 python3 -m pytest -q               # 单元/CLI 测试
 python3 -m prepquant.scenarios --out out/scenarios.json   # 仅生成场景
 ```
@@ -120,7 +124,97 @@ float）。示例：
 
 `out/demo_report.json` 是运行产物，`tests/` 中还包含：
 `test_lp.py`（与 3 维暴力顶点枚举对比）、`test_ledger.py`、`test_vault.py`、
-`test_cli.py`。
+`test_cli.py`，以及整单位分装与抽检的 `test_units.py`、`test_contracts.py`、
+`test_units_cli.py`、`test_units_demo.py`。
+
+## 整单位分装档案（着色/无色标粒）
+
+配液账处理连续体积与溶质质量；另设一个**离散**档案处理整单位标粒：每个体积
+单位恰含一粒，每粒或**着色**或**无色**。母盒声明两类粒数，分装时从某盒等概率、
+不放回地取 `k` 粒，其余留在原盒。仅支持至多 16 粒、同时至多 4 个非空盒。
+
+### 表示与相关性
+
+* **联合状态，而非边缘。** 从同一母盒分出的两盒负相关：第一盒着色多，第二盒
+  必然少。因此状态是**所有非空盒着色数向量的精确联合分布**
+  `((盒, 着色数), …) → Fraction`，而不是各盒边缘。这样上游拆分的相关性被完整保留。
+* **可交换性使计数向量充分。** 盒内哪些具体粒在哪无关紧要，只看着色数。从
+  `(t, c)` 取 `k` 粒得 `d` 粒着色的概率为超几何
+  `C(c,d)·C(t-c,k-d)/C(t,k)`，余下 `c-d` 粒。后续在“盒当时实际状态”条件下的
+  抽取，正是在当前联合分布中对 `c` 求条件，于是连续多次拆分由**逐次超几何卷积**
+  精确处理——测试中以多元超几何分布的闭式与逐次拆分的联合分布逐项比对。
+* **回并是确定的。** 把分出物重新合盒只是把着色数相加，不引入随机性，但合并盒
+  与其余盒的协方差仍被保留。
+* **盘查即条件；矛盾是一等公民。** 非破坏性盘查只把某盒着色数限定在区间
+  `[lo, hi]`，把匹配的联合概率质量重新归一。若盘查后条件概率为零、或要求超过
+  该盒实有粒数、或 `lo > hi`，一律以 `UnitContradiction` 明确拒绝，绝不静默丢弃
+  冲突。
+
+记录为有序、原子、可重放的 `beads / transfer / mix / inspect` 批；任何违规都会
+整批回滚。`transfer`/`mix` 与配液账同形（也接受 `volume` 别名），`beads_from_ledger`
+可把配液账中真实的 `transfer`/`mix` 记录（给定母盒两类粒数、体积视为整单位数）
+直接驱动本档案；若某标粒盒被 `solvent`/`evaporate`/`discard` 或与非标粒容器混用，
+则明确报错，避免离散档案与配液账静默偏离。
+
+### 命令行
+
+```bash
+python3 -m prepquant.cli --units beads.db units-prep records.json
+python3 -m prepquant.cli --units beads.db units-boxes --json
+python3 -m prepquant.cli --units beads.db units-joint A B --out product.json   # 两盒联合产品
+python3 -m prepquant.cli --units beads.db units-log
+python3 -m prepquant.cli contract --product product.json --contract c.json     # 抽检
+```
+
+记录 JSON 示例（`beads / transfer / mix / inspect`）：
+
+```json
+[
+ {"op":"beads","box":"P","colored":"2","colorless":"2"},
+ {"op":"transfer","source":"P","units":"2","destination":"A"},
+ {"op":"mix","sources":[{"box":"A"},{"box":"B"}],"destination":"M"},
+ {"op":"inspect","box":"A","min":"1","max":"2"}
+]
+```
+
+`units-joint A B` 导出的**联合产品**只含两盒粒数与精确联合分布，检测端只读它与
+自己的合同，不接触档案私有账本。
+
+## 两阶段抽检合同
+
+合同字段（均为整数，满足 `a < r`）：第一阶段从第一盒不放回抽 `n` 粒，着色数 `x`
+满足 `x <= a` 提前放行、`x >= r` 提前退回，其余继续；第二阶段从第二盒不放回抽
+`m` 粒，两次合计 `X+Y <= b` 才最终放行。`second_box` 可指定另一盒；缺省
+`"continue"` 表示**在第一盒继续抽其余量**（即用第一阶段的剩余实物，而非重抽整盒）。
+
+对每个第一阶段着色数 `x`，报告给出该分支概率、早放行/早退回/继续的判断、以及经
+该分支最终放行的概率；再给出总放行概率与预期抽取粒数（`n + m·P(继续)`），全部
+为精确分数。若某条**正概率的继续分支**需要抽取超过所选第二阶段盒实有粒数，合同
+被拒绝——该分支确会发生，承诺取超过实有的粒数无效。
+
+```
+$ python3 -m prepquant.cli contract --product product.json --contract c.json
+stage 1: draw 1 from 'A'; x<= 0 accept, x>= 2 reject, else continue
+stage 2: draw 1 from 'P'; final accept iff total <= 1
+  x   P(X=x)   branch     eventual accept
+  0       1/2   accept     1/2
+  1       1/2   continue   1/3
+stage-1 split: accept 1/2, reject 0, continue 1/2
+release probability: 5/6
+expected units drawn: 3/2
+```
+
+### 手算例子（`units_demo.py` 逐一核对）
+
+* 四粒两着色，随机分 A、B 各两粒；先从 A 抽一粒，无色即放行，着色则从 B 抽一
+  粒，累计至多一着色才放行（`a=0, r=2, b=1`）：联合分布
+  `{(0,2):1/6,(1,1):2/3,(2,0):1/6}`，第一阶段 `x=0`（1/2）即放行，`x=1`（1/2）
+  继续并再放行 2/3，故总放行 `1/2+1/3=5/6`，预期抽取 `1 + 1·(1/2)=3/2`。
+* 固定分装，改 `b=0`：`x=1` 分支不再放行，总放行 `1/2`。
+* 起始档改为四粒仅一着色：总放行 `1`（必放行），预期抽取 `5/4`。
+* **同一盒续抽**：四粒两着色、A 两粒，先从 A 抽一粒，着色则在 A 用其仅剩的一粒
+  继续抽（`second_box="continue"`）。这是对余量取样而非重抽整盒，总放行 `5/6`
+  （重抽整盒会错误得到 `2/3`）。
 
 ## 精确性保证
 
@@ -129,3 +223,6 @@ float）。示例：
   不一致即抛错而不是给出近似值。
 * `tests/test_lp.py` 在二维/三维随机系统上把可行性、每个变量的最小/最大
   端点与暴力枚举全部顶点（Cramer 法则）比对。
+* 整单位档案全程精确：联合分布、超几何概率、盘查重归一、抽检放行概率与预期
+  抽取粒数都是 `Fraction`；逐次拆分与多元超几何分布闭式逐项比对，抽检三个示例
+  的放行概率/抽数与手算一致。

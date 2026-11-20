@@ -23,6 +23,10 @@ from pathlib import Path
 from .ledger import Ledger, LedgerError
 from .rational import q, qstr
 from .vault import Vault, VaultError
+from . import contracts as contract_mod
+from . import units as units_mod
+
+UNIT_COMMANDS = ("units-prep", "units-boxes", "units-joint", "units-log", "contract")
 
 
 def _load_ops(path: str | None) -> list[dict]:
@@ -90,6 +94,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="prepquant", description="Exact dilution ledger and quantitation vault")
     p.add_argument("--ledger", default="ledger.db", help="preparation ledger SQLite file")
     p.add_argument("--vault", default="vault.db", help="quantitation vault SQLite file")
+    p.add_argument("--units", default=None, help="whole-unit bead archive SQLite file (defaults to the ledger path)")
     sub = p.add_subparsers(dest="command", required=True)
 
     sub.add_parser("init", help="create/reopen both databases")
@@ -116,6 +121,26 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("corrections", help="show correction audit trail")
     sub.add_parser("consumed", help="list product versions consumed by analyses")
 
+    # ------------------------------------------------ whole-unit bead archive
+    p_units = sub.add_parser("units-prep", help="apply a batch of whole-unit bead records")
+    p_units.add_argument("file", help="path to JSON records, or '-' for stdin")
+
+    p_uboxes = sub.add_parser("units-boxes", help="list non-empty bead boxes")
+    p_uboxes.add_argument("--json", action="store_true")
+
+    p_ujoint = sub.add_parser("units-joint", help="exact joint colored-count law of two bead boxes")
+    p_ujoint.add_argument("first")
+    p_ujoint.add_argument("second", nargs="?")
+    p_ujoint.add_argument("--out", help="write the joint product payload here")
+
+    p_ulog = sub.add_parser("units-log", help="show the whole-unit record log")
+    p_ulog.add_argument("--json", action="store_true")
+
+    p_contract = sub.add_parser("contract", help="evaluate a two-stage sampling contract")
+    p_contract.add_argument("--product", required=True, help="joint product payload JSON file")
+    p_contract.add_argument("--contract", required=True, help="contract JSON file")
+    p_contract.add_argument("--json", action="store_true")
+
     p_measure = sub.add_parser("measure", help="import one measurement against an exported product")
     p_measure.add_argument("--name", required=True)
     src = p_measure.add_mutually_exclusive_group(required=True)
@@ -138,8 +163,72 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _print_unit_boxes(boxes: list[dict]) -> None:
+    if not boxes:
+        print("(no non-empty bead boxes)")
+        return
+    for b in boxes:
+        print(f"{b['box']:<12} {b['units']:>3} units")
+
+
+def _run_unit_command(args) -> int:
+    """Whole-unit commands read only the bead archive (and, for contracts, a payload)."""
+    if args.command == "contract":
+        product = json.loads(Path(args.product).read_text(encoding="utf-8"))
+        contract = json.loads(Path(args.contract).read_text(encoding="utf-8"))
+        try:
+            report = contract_mod.evaluate_contract(product, contract)
+        except contract_mod.ContractError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        if args.json:
+            _print(report)
+        else:
+            print(contract_mod.format_report(report))
+        return 0
+
+    archive = units_mod.UnitArchive(args.units or args.ledger)
+    try:
+        if args.command == "units-prep":
+            seqs = archive.apply_batch(_load_ops(args.file))
+            print(f"applied {len(seqs)} whole-unit record(s): seq {seqs[0]}..{seqs[-1]}" if seqs else "nothing to do")
+            return 0
+        if args.command == "units-boxes":
+            boxes = archive.boxes()
+            if args.json:
+                _print(boxes)
+            else:
+                _print_unit_boxes(boxes)
+            return 0
+        if args.command == "units-joint":
+            product = archive.joint_product(args.first, args.second)
+            text = json.dumps(product, indent=2, ensure_ascii=False)
+            if args.out:
+                Path(args.out).write_text(text + "\n", encoding="utf-8")
+                print(f"wrote {args.out}")
+            else:
+                _print(product)
+            return 0
+        if args.command == "units-log":
+            log = archive.log()
+            if args.json:
+                _print(log)
+            else:
+                for r in log:
+                    print(f"{r['seq']:>3}  {r['kind']:<9} {json.dumps(r['op'], sort_keys=True, ensure_ascii=False)}")
+            return 0
+    except units_mod.UnitError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        archive.close()
+    raise SystemExit(f"unhandled unit command {args.command}")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command in UNIT_COMMANDS:
+        return _run_unit_command(args)
     try:
         ledger = Ledger(args.ledger)
     except LedgerError as exc:
